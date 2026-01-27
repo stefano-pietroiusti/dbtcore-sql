@@ -1,96 +1,177 @@
-dbt SQL Server Permission Model — Guiding Principle
-Overview
+﻿# dbt SQL Server Permission Model
+
+## Guiding Principle
+
+**dbt must have full control over the schemas it manages, and zero control over anything else.**
+
+---
+
+## Overview
+
 This project uses dbt Core to build, test, and deploy data models on SQL Server.
-To maintain a secure and auditable environment, dbt runs under a domain‑managed gMSA on an application VM, connecting to SQL Server using Kerberos authentication.
 
-The permission model follows a strict principle of least privilege:
-dbt receives only the minimum rights required to create and manage objects inside its own schemas, and nothing more.
+To maintain a secure and auditable environment, dbt runs under a **domain-managed gMSA** on an application VM, connecting to SQL Server using **Kerberos authentication**.
 
-Guiding Principle
-dbt must have full control over the schemas it manages, and zero control over anything else.
+The permission model follows a strict principle of **least privilege**:
 
-SQL Server does not provide a single “write” permission that covers all operations dbt performs.
+> dbt receives only the minimum rights required to create and manage objects inside its own schemas, and nothing more.
+
+---
+
+## Why This Model?
+
+SQL Server does not provide a single "write" permission that covers all operations dbt performs.
+
 To function correctly, dbt needs to be able to:
 
-create and replace tables
+-  Create and replace tables
+-  Create and replace views
+-  Drop and rebuild objects
+-  Run incremental logic
+-  Run tests that generate SQL
+-  Create temporary tables
+-  Optionally create ephemeral PR schemas during CI
 
-create and replace views
+These operations require a combination of object-level permissions that SQL Server only grants through **CONTROL on a schema**.
 
-drop and rebuild objects
+By granting CONTROL only on dbt-managed schemas, we ensure:
 
-run incremental logic
+-  dbt can fully manage its own objects
+-  dbt cannot modify or read objects in other schemas
+-  No database-wide or server-level permissions are required
+-  The blast radius is tightly contained
+-  The model remains compliant with least-privilege security standards
 
-run tests that generate SQL
+---
 
-create temporary tables
+## Permission Summary
 
-optionally create ephemeral PR schemas during CI
+### Database-Level (Minimum Required)
 
-These operations require a combination of object‑level permissions that SQL Server only grants through CONTROL on a schema.
+| Permission | Purpose |
+|------------|---------|
+| `CONNECT` | Establish a session |
+| `SELECT` | Required for dbt tests to read data |
+| `CREATE TABLE` | Required for temp tables during tests |
+| `CREATE SCHEMA` | Only if CI creates ephemeral PR schemas |
 
-By granting CONTROL only on dbt‑managed schemas, we ensure:
+```sql
+USE [YourDatabase];
+GO
 
-dbt can fully manage its own objects
+GRANT CONNECT TO [DOMAIN\dbt-gmsa$];
+GRANT SELECT TO [DOMAIN\dbt-gmsa$];
+GRANT CREATE TABLE TO [DOMAIN\dbt-gmsa$];
+-- GRANT CREATE SCHEMA TO [DOMAIN\dbt-gmsa$];  -- Only if using CI ephemeral schemas
+```
 
-dbt cannot modify or read objects in other schemas
+### Schema-Level (dbt-Managed Schemas Only)
 
-no database‑wide or server‑level permissions are required
+Grant **CONTROL** on each dbt-managed schema:
 
-the blast radius is tightly contained
+- `raw`
+- `staging`
+- `int`
+- `reporting`
+- `prod`
+- `*_pr_<number>` (ephemeral CI schemas, if used)
 
-the model remains compliant with least‑privilege security standards
+**Example:**
 
-Permission Summary
-Database‑level (minimum required)
-CONNECT — establish a session
+```sql
+GRANT CONTROL ON SCHEMA::raw TO [DOMAIN\dbt-gmsa$];
+GRANT CONTROL ON SCHEMA::staging TO [DOMAIN\dbt-gmsa$];
+GRANT CONTROL ON SCHEMA::int TO [DOMAIN\dbt-gmsa$];
+GRANT CONTROL ON SCHEMA::reporting TO [DOMAIN\dbt-gmsa$];
+GRANT CONTROL ON SCHEMA::prod TO [DOMAIN\dbt-gmsa$];
+```
 
-SELECT — required for dbt tests
+** Important:** No permissions granted on any other schemas (e.g., `dbo`, `sys`, etc.)
 
-CREATE TABLE — required for temp tables during tests
+---
 
-CREATE SCHEMA — only if CI creates ephemeral PR schemas
+## Why CONTROL is the Minimum
 
-Schema‑level (dbt‑managed schemas only)
-Grant CONTROL on:
-
-raw
-
-staging
-
-int
-
-reporting
-
-prod
-
-*_pr_<number> (ephemeral CI schemas, if used)
-
-Example:
-
-Code
-GRANT CONTROL ON SCHEMA::staging TO [DOMAIN\my-dbt-gmsa$];
-No permissions granted on any other schemas
-Why CONTROL is the Minimum
 dbt needs to perform DDL and DML operations that SQL Server does not group under a single permission.
-Without CONTROL, dbt would require a long list of granular permissions (CREATE VIEW, ALTER, DROP, INSERT, UPDATE, DELETE, REFERENCES, etc.), which is brittle and still incomplete.
 
-CONTROL is the smallest permission that:
+Without CONTROL, dbt would require a long list of granular permissions:
+- `CREATE VIEW`
+- `ALTER`
+- `DROP`
+- `INSERT`
+- `UPDATE`
+- `DELETE`
+- `REFERENCES`
+- etc.
 
-enables all dbt operations
+This approach is brittle and still incomplete.
 
-applies only to the specific schema
+**CONTROL is the smallest permission that:**
 
-avoids database‑wide privileges
+-  Enables all dbt operations
+-  Applies only to the specific schema
+-  Avoids database-wide privileges
+-  Keeps the environment secure and predictable
 
-keeps the environment secure and predictable
+---
 
-Security Benefits
-Strong isolation between dbt and other workloads
+## Security Benefits
 
-No db_owner, no ALTER ANY SCHEMA, no server‑level rights
+| Benefit | Description |
+|---------|-------------|
+| **Strong isolation** | Complete separation between dbt and other workloads |
+| **No elevated privileges** | No `db_owner`, no `ALTER ANY SCHEMA`, no server-level rights |
+| **Automatic credential rotation** | gMSA provides password rotation and full auditability |
+| **CI safety** | Ephemeral PR schemas remain isolated and safe |
+| **Full functionality** | dbt retains complete functionality without over-privilege |
 
-gMSA provides automatic password rotation and full auditability
+---
 
-CI ephemeral schemas remain isolated and safe
+## Verification Query
 
-dbt retains full functionality without over‑privilege
+To verify the permissions granted to the dbt user, run:
+
+```sql
+-- Check database-level permissions
+SELECT 
+    PRINC.name AS [Principal],
+    PERM.permission_name,
+    PERM.state_desc
+FROM sys.database_permissions PERM
+INNER JOIN sys.database_principals PRINC ON PERM.grantee_principal_id = PRINC.principal_id
+WHERE PRINC.name LIKE '%dbt%'
+  AND PERM.class_desc = 'DATABASE'
+ORDER BY PERM.permission_name;
+
+-- Check schema-level permissions
+SELECT 
+    PRINC.name AS [Principal],
+    PERM.permission_name,
+    PERM.state_desc,
+    SCHEMA_NAME(PERM.major_id) AS [Schema]
+FROM sys.database_permissions PERM
+INNER JOIN sys.database_principals PRINC ON PERM.grantee_principal_id = PRINC.principal_id
+WHERE PRINC.name LIKE '%dbt%'
+  AND PERM.class_desc = 'SCHEMA'
+ORDER BY [Schema], PERM.permission_name;
+```
+
+---
+
+## Testing
+
+Use the provided [test-localdb-permissions.sql](test-localdb-permissions.sql) script to validate this permission model locally before deploying to production.
+
+```powershell
+# Run the validation script
+sqlcmd -S "(localdb)\MSSQLLocalDB" -i test-localdb-permissions.sql
+```
+
+---
+
+## References
+
+- [SQL Server CONTROL Permission](https://learn.microsoft.com/en-us/sql/t-sql/statements/grant-schema-permissions-transact-sql)
+- [Group Managed Service Accounts](https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview)
+- [dbt Core Documentation](https://docs.getdbt.com/docs/core/about-core-setup)
+- [Principle of Least Privilege](https://learn.microsoft.com/en-us/azure/security/fundamentals/identity-management-best-practices#enable-password-management)
