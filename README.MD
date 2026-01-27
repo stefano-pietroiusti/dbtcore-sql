@@ -1,25 +1,59 @@
-# README: Testing dbt-core with SQL Server on Windows
+# dbt-core SQL Server Project
 
-This guide explains how to set up Python, install dbt-core with the dbt-sqlserver adapter, and use PowerShell scripts to reset schemas and run dbt against SQL Server.
+This project demonstrates dbt Core with SQL Server, implementing a least-privilege permission model and data reconciliation workflows.
 
----
+## 📋 Project Overview
+
+- **Purpose**: Build and test data models on SQL Server using dbt Core
+- **Security**: Implements least-privilege permissions using schema-level CONTROL grants
+- **Architecture**: Domain-managed gMSA with Kerberos authentication in production
+- **Testing**: LocalDB-compatible scripts for local development and validation
+
+## 📁 Project Structure
+
+```
+dbtcore-sql/
+├── models/
+│   ├── staging/              # Source data views
+│   │   ├── stg_expected.sql
+│   │   └── stg_source.sql
+│   ├── reconciliation/       # Reconciliation models
+│   │   ├── reconciliation.sql
+│   │   └── reconciliation.yml
+│   └── schema.yml
+├── tests/                    # dbt tests
+│   └── reconciliation_tests.yml
+├── permissions.md            # Security model documentation
+├── sql-setup.sql             # Database setup script
+├── sql-setup-teardown.sql    # Teardown script
+├── test-localdb-permissions.sql  # Permission validation script
+└── Reset-DbtSchema.ps1       # Schema reset automation
+```
 
 ## 📦 Supported Python Versions
 
-- Python **3.10** ✅ (stable)
+- Python **3.10** ✅ (stable, recommended)
 - Python **3.11** ✅ (stable)
 - Python **3.12** ✅ (stable)
-- Python **3.13** ⚠️ (experimental, some adapters may not yet support)
-- Python **3.14** ❌ (not supported by pyodbc/dbt-sqlserver at this time)
+- Python **3.13** ⚠️ (experimental, some adapters may not support)
+- Python **3.14** ❌ (not supported by pyodbc/dbt-sqlserver)
 
 ---
 
-## 🛠 Installing Python (Windows x64)
+## 🛠 Prerequisites
+
+### Windows Environment
+- Windows 10/11 or Windows Server 2019+
+- SQL Server 2016+ or LocalDB (for local testing)
+- ODBC Driver 17 or 18 for SQL Server
+- PowerShell 5.1 or later
+
+### Installing Python (Windows x64)
 
 Use PowerShell to download and install silently:
 
 ```powershell
-# Python 3.10
+# Python 3.10 (recommended)
 Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.10.12/python-3.10.12-amd64.exe -OutFile python-3.10.12-amd64.exe
 .\python-3.10.12-amd64.exe /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
 
@@ -35,42 +69,143 @@ Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.12.4/python-3.12.4-am
 Invoke-WebRequest -Uri https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe -OutFile python-3.13.0-amd64.exe
 .\python-3.13.0-amd64.exe /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
 
+# Verify installations
+
 
 py -3.10 --version
 py -3.11 --version
 py -3.12 --version
 py -3.13 --version
+```
 
+---
 
+## 🚀 Quick Start
+
+### 1. Set Up Virtual Environment
+
+```powershell
 # Create venv for Python 3.12
-py -3.12 -m venv .venv312
-.\.venv312\Scripts\activate
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
 
 # Upgrade pip and install dbt-core + dbt-sqlserver
 pip install --upgrade pip
 pip install dbt-core dbt-sqlserver
+```
 
+### 2. Configure dbt Profile
 
-# Check dbt installation
-dbt --version
+Create or edit `~/.dbt/profiles.yml`:
 
-# Initialize a new project
-dbt init my_project
+```yaml
+dbtcore-sql:
+  target: dev
+  outputs:
+    dev:
+      type: sqlserver
+      driver: "ODBC Driver 18 for SQL Server"
+      server: "localhost\\SQLEXPRESS"  # or "(localdb)\\MSSQLLocalDB" for LocalDB
+      port: 1433
+      user: "sa"
+```powershell
+# Example: Reset the dbt schema
+.\Reset-DbtSchema.ps1 -Server "localhost\SQLEXPRESS" -Database "crmdsl" -User "sa" -Password "YourPassword" -Schema "dbt"
 
-# Debug connection
-dbt debug
+# With LocalDB
+.\Reset-DbtSchema.ps1 -Server "(localdb)\MSSQLLocalDB" -Database "dbt_perm_test" -User "sa" -Password "YourPassword" -Schema "dbt"
+```
 
-# Compile models
-dbt compile
+---
 
-# Run models
-dbt run
+## 🧪 Testing Workflows
 
-# Run with full refresh
-dbt run --full-refresh
-
-# Run tests
+### Run All Tests
+```powershell
 dbt test
+```
+
+### Run Specific Tests
+```powershell
+dbt test --select reconciliation
+dbt test --select staging
+```
+
+### CI/CD Pipeline Example
+```powershell
+# Full workflow
+dbt deps              # Install dependencies
+dbt seed              # Load seed data (if any)
+dbt run --full-refresh # Build all models
+dbt test              # Run all tests
+dbt docs generate     # Generate documentation
+```
+
+---
+
+## 📚 Additional Resources
+
+- [dbt Core Documentation](https://docs.getdbt.com/docs/core/about-core-setup)
+- [dbt-sqlserver Adapter](https://github.com/dbt-msft/dbt-sqlserver)
+- [SQL Server Permissions](https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine)
+- [gMSA Configuration](https://learn.microsoft.com/en-us/windows-server/security/group-managed-service-accounts/group-managed-service-accounts-overview)
+
+---
+
+## 🐛 Troubleshooting
+
+### Connection Issues
+
+**Problem**: `dbt debug` fails with authentication error
+
+**Solution**: 
+- Verify SQL Server is running: `Get-Service MSSQLSERVER`
+- Test connection with sqlcmd: `sqlcmd -S localhost\SQLEXPRESS -U sa -P password -Q "SELECT @@VERSION"`
+- Check ODBC driver: `odbcad32` → Drivers tab
+- For LocalDB: `sqllocaldb info` and `sqllocaldb start MSSQLLocalDB`
+
+### Permission Errors
+
+**Problem**: `CREATE VIEW` or `CREATE TABLE` fails
+
+**Solution**:
+- Verify schema-level CONTROL: `SELECT * FROM sys.database_permissions WHERE grantee_principal_id = USER_ID('dbt_user')`
+- Run [test-localdb-permissions.sql](test-localdb-permissions.sql) to validate
+- Check that schema exists: `SELECT * FROM sys.schemas WHERE name = 'dbt'`
+
+### Python/Package Issues
+
+**Problem**: `ModuleNotFoundError: No module named 'dbt'`
+
+**Solution**:
+- Activate virtual environment: `.\.venv\Scripts\activate`
+- Reinstall: `pip install --upgrade dbt-core dbt-sqlserver`
+- Verify: `pip list | Select-String dbt`
+
+---
+
+## 📝 Summary
+
+✅ Use Python 3.10–3.12 for stable dbt-core + dbt-sqlserver  
+✅ Configure profiles.yml with correct connection details  
+✅ Grant schema-level CONTROL for dbt-managed schemas  
+✅ Use [test-localdb-permissions.sql](test-localdb-permissions.sql) to validate permissions  
+✅ Automate schema reset with Reset-DbtSchema.ps1  
+✅ Run `dbt debug` → `dbt run` → `dbt test` workflowipt validates all required dbt operations:
+- ✅ CREATE TABLE
+- ✅ CREATE VIEW
+- ✅ ALTER VIEW
+- ✅ DROP objects
+- ✅ Temp tables (for tests)
+- ✅ Metadata access
+
+---
+
+## 🔧 PowerShell Automation
+
+### Reset Schema Script
+
+Use `Reset-DbtSchema.ps1` to clean and recreate schemas:
 
 param(
     [string]$Server = "your_sql_server_host",
