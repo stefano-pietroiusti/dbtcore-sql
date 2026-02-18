@@ -1,5 +1,5 @@
 -- Use your target database
-USE crmdsl;
+USE crmbiansys;
 GO
 
 -- Drop tables if they already exist

@@ -1,10 +1,10 @@
-Macro: classify_onyx_key_type
+Macro: classify_crm_key_type
 --------------------------------
-This macro inspects the ONYX attribute name and assigns a key type used by the join builder.
+This macro inspects the CRM attribute name and assigns a key type used by the join builder.
 
-Place in: macros/reconciliation/classify_onyx_key_type.sql
+Place in: macros/reconciliation/classify_crm_key_type.sql
 
-{% macro classify_onyx_key_type(column_name) %}
+{% macro classify_crm_key_type(column_name) %}
     case
         when lower({{ column_name }}) in ('owner_id', 'owner_type_id')
             then 'owner'
@@ -41,17 +41,17 @@ Place in: macros/reconciliation/transform_bian_mappings.sql
               domain
             , entity
 
-            , case when sor_system = 'DSL'
+            , case when sor_system = 'BIANSystem'
                    then attribute
-              end as dsl_attribute
+              end as bian_attribute
 
-            , case when sor_system = 'Onyx'
+            , case when sor_system = 'CRM'
                    then attribute
-              end as onyx_attribute
+              end as crm_attribute
 
             , is_key
 
-            , {{ classify_onyx_key_type('attribute') }} as onyx_key_type
+            , {{ classify_crm_key_type('attribute') }} as crm_key_type
 
         from raw
     ),
@@ -61,11 +61,11 @@ Place in: macros/reconciliation/transform_bian_mappings.sql
               domain
             , entity
 
-            , max(dsl_attribute)  as dsl_attribute
-            , max(onyx_attribute) as onyx_attribute
+            , max(bian_attribute)  as bian_attribute
+            , max(crm_attribute) as crm_attribute
 
             , max(is_key)         as is_key
-            , max(onyx_key_type)  as onyx_key_type
+            , max(crm_key_type)  as crm_key_type
 
         from classified
         group by domain, entity, attribute
@@ -73,8 +73,8 @@ Place in: macros/reconciliation/transform_bian_mappings.sql
 
     select *
     from aggregated
-    where dsl_attribute is not null
-      and onyx_attribute is not null
+    where bian_attribute is not null
+      and crm_attribute is not null
 
 {% endmacro %}
 

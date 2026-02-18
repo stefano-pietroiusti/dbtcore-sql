@@ -1,4 +1,4 @@
-USE crmdsl;
+USE crmbiansys;
 GO
 
 -- Drop raw tables if they exist

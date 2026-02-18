@@ -1,613 +1,319 @@
-Dynamic Reconciliation Framework
+# Dynamic BIAN Domain Reconciliation (BIANSystem ↔ CRM)
 
-1. Overview This project implements a metadata‑driven reconciliation engine between DSL staging entities and ONYX staging entities. The engine uses BIAN mapping metadata and BIAN reconciliation type metadata to dynamically generate reconciliation logic, join rules, and mismatch detection without hard‑coding any entity‑specific SQL.
+## 1. Overview
 
+This document describes the architecture and workflow for a **dynamic, metadata-driven reconciliation engine** between:
+
+- **BIANSystem** → the system that produces BIAN-aligned data  
+- **CRM** → the operational source system providing customer/party data  
+
+The objective is to reconcile BIANSystem outputs against CRM **without writing entity-specific SQL**.  
+All reconciliation logic is generated dynamically using metadata.
+
+### What the Engine Does
+
+The reconciliation engine:
+- ✅ Identifies mismatches between BIANSystem and CRM
+- ✅ Supports all BIAN service domains and business objects
+- ✅ Uses metadata to drive join logic, comparison logic, and mismatch reporting
+- ✅ Produces a unified reconciliation output table for all domains
+- ✅ Stores **no values** in the unified table (metadata-only mismatch ledger)
+
+### Reconciliation Outputs
 
 The reconciliation layer produces:
 
-• A unified mismatch table containing only metadata (no attribute values)
-• Optional forensic tables for value‑level investigation
-• One reconciliation model per BIAN domain and entity
-• A macro framework that dynamically builds join rules, comparison logic, and match status
+- **Unified mismatch table** containing only metadata (no attribute values)
+- **One reconciliation model** per BIAN domain and entity
+- **Macro framework** that dynamically builds join rules, comparison logic, and match status
 
+**Note:** Actual value investigation is performed directly against staging models and is not stored in reporting schemas.
 
-This design ensures scalability, auditability, and consistency across all BIAN domains and entities.
-
----
-
-1. Project Structure The dbt project root is located in the “crmdsl” folder.
-The folder structure is:
-
-
-crmdsl/ dbt_project.yml macros/ reconciliation/ dynamic_reconciliation.sql build_join_conditions.sql build_match_status.sql build_mismatch_array.sql dynamic_value_diff.sql (optional forensic macro) models/ reconciliation/ / recon_.sql reconexceptions.sql reconciliation_summary/ recon_all_mismatches.sql reconciliation_forensics/ reconvalue_diffs.sql (optional) seeds/ bian_mappings.csv bian_reconciliation_types.csv staging/ staging.sql
+This design ensures **scalability, auditability, and consistency** across all BIAN domains and entities.
 
 ---
 
-1. Metadata Inputs The reconciliation engine relies on two seed tables:
-2. bian_mappings• Defines how DSL attributes map to ONYX attributes
-• Identifies key attributes using is_key = ‘Y’
-• Provides onyx_key_type to support reference logic: owner address did generic
+## 2. Metadata Inputs
 
-3. bian_reconciliation_types• Defines reconciliation behavior: join_type (left, full_outer) direction (one_way_left, both_ways) include_missing_source include_missing_target match_priority
+### 2.1 bian_mappings.csv
 
+Defines attribute-level mappings between BIANSystem and CRM.
 
+**Required columns:**
 
----
+| Column | Description |
+|--------|-------------|
+| `domain` | BIAN service domain |
+| `entity` | BIAN business object |
+| `bian_attribute` | Attribute name in BIANSystem |
+| `crm_attribute` | Attribute name in CRM |
+| `is_key` | Key indicator (Y/N) |
+| `mapping_rule` | Optional transformation rule |
+| `is_active` | Active flag (Y/N) |
 
-1. Reconciliation Logic The reconciliation engine is fully metadata‑driven.
-No entity‑specific SQL is written in the models.
+**Purpose:**
+- Defines how BIANSystem attributes map to CRM attributes
+- Identifies key attributes using `is_key = 'Y'`
+- Provides mapping rules for transformation logic
 
+### 2.2 bian_reconciliation_types.csv
 
-The dynamic_reconciliation() macro performs the following steps:
+Defines how attributes should be compared.
 
-1. Load BIAN mapping metadata for the given domain and entity.
-2. Identify key attributes (is_key = ‘Y’).
-3. Build join rules dynamically:• DSL key attributes
-• ONYX mapped key attributes
-• ONYX reference logic: owner_id + owner_type_id address_id did
+**Required columns:**
 
-4. Load reconciliation type metadata.
-5. Build match_status: matched mismatch missing_in_source missing_in_target
-6. Build mismatch_columns array (attribute names only).
-7. Build mismatch_count.
-8. Return a SELECT block containing only metadata fields: domain entity primary keys match_status mismatch_columns mismatch_count reconciliation_type run_id load_timestamp
+| Column | Description |
+|--------|-------------|
+| `reconciliation_type` | Type of comparison (EXACT, NORMALIZED, DATE_ONLY, etc.) |
+| `comparison_rule` | SQL-level comparison logic |
+| `description` | Description of reconciliation type |
 
-
-No attribute values are included in the output.
-
----
-
-1. Unified Mismatch Table The model recon_all_mismatches.sql aggregates all reconciliation results across all domains and entities.
-
-
-This table contains:
-
-• domain
-• entity
-• source_system
-• target_system
-• primary keys
-• match_status
-• mismatch_columns
-• mismatch_count
-• reconciliation_type
-• run_id
-• load_timestamp
-
-
-This table is used for reporting, dashboards, and operational monitoring.
+**Common reconciliation types:**
+- `EXACT` - Exact match required
+- `NORMALIZED` - Trimmed, lowercased comparison
+- `DATE_ONLY` - Compare date part only
+- `NUMERIC_TOLERANCE` - Allow minor numeric differences
 
 ---
 
-1. Forensic Value‑Level Investigation (Optional) A separate schema is used for value‑level investigation.
+## 3. Normalized Metadata Model
 
+Raw seeds are transformed into a **normalized metadata table** (`bian_mappings_normalized`) with:
 
-The dynamic_value_diff() macro produces:
+**Core columns:**
+- `domain`
+- `entity`
+- `bian_attribute`
+- `crm_attribute`
+- `is_key`
+- `crm_key_type` (owner, address, did, generic)
+- `reconciliation_type`
+- `mapping_rule`
+- `is_active`
 
-• DSL value
-• ONYX value
-• attribute_name
-• mismatch_reason
-• primary keys
-
-
-These tables are stored under reconciliation_forensics/ and are not used for reporting.
-
----
-
-1. Reconciliation Model Template Each reconciliation model is a thin wrapper that calls the macro:
-
-
-{{ dynamic_reconciliation( domain = ‘prdd’, entity = ‘emails’, source_system = ‘dsl’, target_system = ‘onyx’ ) }}
-
-No SQL is written in the model itself.
+This table is the **single source of truth** for all reconciliation logic.
 
 ---
 
-1. Exception Models Each entity may optionally define an exceptions model to capture:
+## 4. Transformation Macros
 
+### 4.1 classify_crm_key_type(column_name)
 
-• known mismatches
-• business‑approved overrides
-• tolerance rules
+Macro that assigns CRM key types used for join logic.
 
+**Classification rules:**
 
-These models are stored alongside the reconciliation models.
+| Column Pattern | CRM Key Type |
+|----------------|--------------|
+| `owner_id` or `owner_type_id` | `owner` |
+| `address_id` | `address` |
+| `did` | `did` |
+| All others | `generic` |
 
----
+**Example:**
+```jinja
+{% macro classify_crm_key_type(column_name) %}
+    case
+        when lower('{{ column_name }}') in ('owner_id', 'owner_type_id') then 'owner'
+        when lower('{{ column_name }}') = 'address_id' then 'address'
+        when lower('{{ column_name }}') = 'did' then 'did'
+        else 'generic'
+    end
+{% endmacro %}
+```
 
-1. Running the Project From the project root (crmdsl folder):
+### 4.2 transform_bian_mappings()
 
+Converts raw seed rows into normalized metadata.
 
-dbt clean dbt seed dbt run dbt test
+**Transformation steps:**
+1. Filters active rows (`is_active = 'Y'`)
+2. Splits BIANSystem vs CRM attributes
+3. Aggregates into one row per mapped attribute
+4. Applies key type classification via `classify_crm_key_type()`
+5. Joins reconciliation types
 
-To compile only:
-
-dbt compile
-
----
-
-1. Summary This reconciliation framework is:
-
-
-• metadata‑driven
-• scalable across all BIAN domains
-• consistent and auditable
-• safe (no values in reporting tables)
-• extensible via macros
-• aligned with dbt best practices
-
-
-
-
-1. The unified mismatch table becomes purely metadata
-
-It contains:
-
-• domain
-• entity
-• source_system
-• target_system
-• primary keys (DSL + ONYX)
-• match_status
-• mismatch_columns (array of column names only)
-• mismatch_count
-• reconciliation_type
-• run_id
-• load_timestamp
-
-
-No values.
-No diffs.
-No before/after.
-
-2. Value investigation happens by querying staging models directly
-
-This is actually ideal because:
-
-• staging models already contain clean, typed, transformed data
-• no duplication
-• no PII leakage into reporting schemas
-• no need for a forensic schema
-• no need to maintain extra tables
-
-
-3. The reconciliation macro becomes simpler
-
-It only needs to:
-
-• build join rules
-• detect mismatches
-• produce metadata
-• not produce value-level columns
-
-
-4. The reconciliation models remain thin wrappers
-
-Each entity model calls:
-
-{{ dynamic_reconciliation(domain='prdd', entity='emails', source_system='dsl', target_system='onyx') }}
-
-
-5. The summary model aggregates everything
-
-One table for all mismatches across all domains and entities.
+**Output model:** `bian_mappings_normalized`
 
 ---
 
-⭐ Updated README.txt (copy/paste ready)
+## 5. Reconciliation Architecture
 
-Below is the revised README.txt reflecting the “no forensic layer” design.
+Reconciliation runs per **domain + entity** pair.
 
----
+### 5.1 Inputs
 
-README.txt
-Dynamic Reconciliation Framework (Metadata‑Only)
+- BIANSystem staging model: `stg_biansystem_<domain>_<entity>`
+- CRM staging model: `stg_crm_<domain>_<entity>`
+- Normalized metadata: `bian_mappings_normalized`
 
-1. Overview This project implements a metadata‑driven reconciliation engine between DSL staging entities and ONYX staging entities. The engine uses BIAN mapping metadata and BIAN reconciliation type metadata to dynamically generate reconciliation logic, join rules, and mismatch detection without hard‑coding any entity‑specific SQL.
+### 5.2 Outputs
 
-
-The reconciliation layer produces:
-
-• A unified mismatch table containing only metadata (no attribute values)
-• One reconciliation model per BIAN domain and entity
-• A macro framework that dynamically builds join rules, comparison logic, and match status
-
-
-Actual value investigation is performed directly against staging models and is not stored in reporting schemas.
-
----
-
-1. Project Structure
-
-
-crmdsl/ dbt_project.yml macros/ reconciliation/ dynamic_reconciliation.sql build_join_conditions.sql build_match_status.sql build_mismatch_array.sql models/ reconciliation/ / recon_.sql reconexceptions.sql reconciliation_summary/ recon_all_mismatches.sql seeds/ bian_mappings.csv bian_reconciliation_types.csv staging/ staging_.sql
+A unified reconciliation table containing **metadata only**, not values:
+- domain
+- entity
+- source_system
+- target_system
+- primary_key_hash
+- attribute_name
+- reconciliation_type
+- match_status
+- mismatch_reason
+- run_timestamp
 
 ---
 
-1. Metadata Inputs
-2. bian_mappings• Defines how DSL attributes map to ONYX attributes
-• Identifies key attributes using is_key = ‘Y’
-• Provides onyx_key_type to support reference logic: owner address did generic
+## 6. Dynamic Join Logic
 
-3. bian_reconciliation_types• Defines reconciliation behavior: join_type (left, full_outer) direction (one_way_left, both_ways) include_missing_source include_missing_target match_priority
+### 6.1 Key Selection
 
+Keys are attributes where `is_key = 'Y'`.
 
+### 6.2 CRM Key Type Handling
 
----
+CRM keys may require special handling:
 
-1. Reconciliation Logic
+| CRM Key Type | Join Logic |
+|--------------|------------|
+| `owner` | Join on `owner_id + owner_type_id` |
+| `address` | Join on `address_id` |
+| `did` | Join on `did` |
+| `generic` | Direct attribute join |
 
+### 6.3 build_join_conditions() Macro
 
-The dynamic_reconciliation() macro performs the following steps:
+Reads metadata and produces SQL join conditions dynamically.
 
-1. Load BIAN mapping metadata for the given domain and entity.
-2. Identify key attributes (is_key = ‘Y’).
-3. Build join rules dynamically:• DSL key attributes
-• ONYX mapped key attributes
-• ONYX reference logic: owner_id + owner_type_id address_id did
+**File:** `macros/reconciliation/build_join_conditions.sql`
 
-4. Load reconciliation type metadata.
-5. Build match_status: matched mismatch missing_in_source missing_in_target
-6. Build mismatch_columns array (attribute names only).
-7. Build mismatch_count.
-8. Return a SELECT block containing only metadata fields: domain entity primary keys match_status mismatch_columns mismatch_count reconciliation_type run_id load_timestamp
-
-
-No attribute values are included in the output.
-
----
-
-1. Unified Mismatch Table
-
-
-The model recon_all_mismatches.sql aggregates all reconciliation results across all domains and entities.
-
-This table contains:
-
-• domain
-• entity
-• source_system
-• target_system
-• primary keys
-• match_status
-• mismatch_columns
-• mismatch_count
-• reconciliation_type
-• run_id
-• load_timestamp
-
-
-This table is used for reporting, dashboards, and operational monitoring.
-
----
-
-1. Value Investigation
-
-
-Value‑level investigation is performed directly against staging models on the day of analysis.
-
-No values are stored in reporting schemas.
-
----
-
-1. Reconciliation Model Template
-
-
-Each reconciliation model is a thin wrapper that calls the macro:
-
-{{ dynamic_reconciliation( domain = ‘prdd’, entity = ‘emails’, source_system = ‘dsl’, target_system = ‘onyx’ ) }}
-
-No SQL is written in the model itself.
-
----
-
-1. Exception Models
-
-
-Each entity may optionally define an exceptions model to capture:
-
-• known mismatches
-• business‑approved overrides
-• tolerance rules
-
-
-These models are stored alongside the reconciliation models.
-
----
-
-1. Running the Project
-
-
-From the project root (crmdsl folder):
-
-dbt clean
-dbt seed
-dbt run
-dbt test
-
-To compile only:
-
-dbt compile
-
----
-
-1. Summary
-
-
-This reconciliation framework is:
-
-• metadata‑driven
-• scalable across all BIAN domains
-• consistent and auditable
-• safe (no values in reporting tables)
-• extensible via macros
-• aligned with dbt best practices
-
-
-The unified mismatch table provides a single source of truth for reconciliation status, while value investigation is performed directly against staging.
-
-Absolutely, Stefano — here is the clean, final, copy‑and‑paste‑ready GitHub Copilot prompt that will instruct Copilot to generate the entire reconciliation framework exactly the way you want it.
-
-This version is tuned for Copilot’s agent mode: explicit, directive, and schema‑driven.
-
-No forensic layer.
-No value‑level output.
-Metadata‑only reconciliation.
-Dynamic join rules.
-Dynamic mismatch detection.
-Fully metadata‑driven.
-
----
-
-GITHUB COPILOT IMPLEMENTATION PROMPT (TXT)
-
-You are assisting with implementing a metadata‑driven reconciliation framework in dbt.
-The goal is to generate a set of macros and model templates that reconcile DSL staging entities against ONYX staging entities using metadata from BIAN mapping seeds and BIAN reconciliation type seeds.
-
-IMPORTANT CONSTRAINTS:
-
-• The unified reconciliation output must NOT contain attribute values.
-• Only metadata should be produced: keys, mismatch columns, mismatch count, match status, reconciliation type, run_id, timestamps.
-• Value investigation will be performed directly against staging models, not stored in reporting schemas.
-
-
-ARCHITECTURE TO IMPLEMENT:
-
-1. One reconciliation model per BIAN domain and entity.
-2. One unified mismatch table for all domains/entities.
-3. All join rules and comparison logic must be metadata‑driven.
-4. No entity‑specific SQL in models; everything must be generated by macros.
-5. No value‑level columns in the reconciliation output.
-
-
-SEED TABLES TO USE:
-
-1. ref(‘bian_mappings’) Columns include:• domain
-• entity
-• dsl_attribute
-• onyx_attribute
-• is_key (Y/N)
-• onyx_key_type (owner, address, did, generic)
-
-2. ref(‘bian_reconciliation_types’) Columns include:• reconciliation_type
-• join_type (left, full_outer)
-• direction (one_way_left, both_ways)
-• include_missing_source
-• include_missing_target
-• match_priority
-
-
-
-MACROS TO IMPLEMENT:
-
-A. dynamic_reconciliation(domain, entity, source_system, target_system) Responsibilities:
-
-• Load BIAN mappings for the domain/entity.
-• Identify key attributes (is_key = ‘Y’).
-• Build dynamic join rules:• DSL key attributes
-• ONYX mapped key attributes
-• ONYX reference logic:• owner_id + owner_type_id composite keys
-• address_id joins
-• did joins
-
-
-• Load reconciliation type metadata.
-• Build match_status:• matched
-• mismatch
-• missing_in_source
-• missing_in_target
-
-• Build mismatch_columns array (attribute names only).
-• Build mismatch_count.
-• Return a SELECT block containing ONLY: domain entity source_system target_system primary keys (DSL + ONYX) match_status mismatch_columns mismatch_count reconciliation_type run_id load_timestamp
-
-
-B. build_join_conditions(mapping_rows)
-
-• Accepts filtered BIAN mapping rows.
-• Generates the ONYX join logic based on onyx_key_type.
-• Must support composite keys and reference logic.
-
-
-C. build_match_status()
-
-• Generates match_status using metadata and null checks.
-
-
-D. build_mismatch_array()
-
-• Produces an array of attribute names that differ.
-• No values included.
-
-
-E. build_mismatch_count()
-
-• Count of mismatched attributes.
-
-
-MODEL TEMPLATES TO GENERATE:
-
-1. models/reconciliation//recon__.sql• Thin wrapper calling dynamic_reconciliation().
-
-2. models/reconciliation//recon___exceptions.sql• Optional override model for business exceptions.
-
-3. models/reconciliation_summary/recon_all_mismatches.sql• UNION ALL of all reconciliation models.
-• Produces the unified mismatch table.
-
-
-
-REQUIREMENTS:
-
-• Use ref() for staging models.
-• Use adapter.dispatch() for macro extensibility.
-• No hard‑coded SQL for any entity.
-• No value‑level columns in any reconciliation output.
-• Code must be clean, modular, and sponsor‑grade.
-
-
-DELIVERABLES:
-
-• All macros listed above.
-• All model templates.
-• Documentation blocks for each macro.
-• A working, metadata‑driven reconciliation framework.
-
-
-Proceed to generate the full implementation.
-
----
-• the macro skeletons
-
-
-• the join‑rule builder logic
-
-Here’s a sponsor‑grade join rule builder you can drop straight into macros/reconciliation/build_join_conditions.sql.
-
-It assumes:
-
-• mapping_rows is a list of rows from ref('bian_mappings') filtered to the current domain + entity.
-• Each row has: dsl_attribute, onyx_attribute, is_key, onyx_key_type.
-• You call this from dynamic_reconciliation() to get a single ON clause string.
-
-
-{% macro build_join_conditions(mapping_rows, dsl_alias='dsl', onyx_alias='onyx') %}
+```jinja
+{% macro build_join_conditions(mapping_rows, bian_alias='bian', crm_alias='crm') %}
     {# 
       mapping_rows: list of mapping records for a given domain/entity
       Each row should expose:
-        - dsl_attribute
-        - onyx_attribute
+        - bian_attribute
+        - crm_attribute
         - is_key
-        - onyx_key_type (owner, address, did, generic)
+        - crm_key_type (owner, address, did, generic)
     #}
 
-    {# Collect individual join predicates here #}
+    {# Collect individual join predicates #}
     {% set join_predicates = [] %}
 
     {% for row in mapping_rows %}
         {% if row.is_key is string and row.is_key | lower == 'y' %}
 
-            {% set dsl_col = row.dsl_attribute %}
-            {% set onyx_col = row.onyx_attribute %}
-            {% set key_type = (row.onyx_key_type or 'generic') | lower %}
-
-            {# 
-              Handle special ONYX key types.
-              We assume the staging models already expose the right columns:
-                - owner_id, owner_type_id
-                - address_id
-                - did
-              The mapping metadata tells us how to interpret the DSL side.
-            #}
+            {% set bian_col = row.bian_attribute %}
+            {% set crm_col = row.crm_attribute %}
+            {% set key_type = (row.crm_key_type or 'generic') | lower %}
 
             {% if key_type == 'owner' %}
-                {# 
-                  Owner-based join:
-                  onyx.owner_id + onyx.owner_type_id identify the ONYX record.
-                  The DSL side may expose a single logical key that maps to both.
-                  Here we assume:
-                    - dsl.<dsl_col> maps to onyx.owner_id
-                    - and we have a separate mapping row for owner_type_id if needed.
-                  If your metadata encodes both, you can refine this.
-                #}
-                {% set predicate = dsl_alias ~ '.' ~ dsl_col ~ ' = ' ~ onyx_alias ~ '.owner_id' %}
+                {# Owner-based join: composite key #}
+                {% set predicate = bian_alias ~ '.' ~ bian_col ~ ' = ' ~ crm_alias ~ '.owner_id' %}
                 {% do join_predicates.append(predicate) %}
 
             {% elif key_type == 'address' %}
-                {# Address-based join: onyx.address_id = dsl.<dsl_col> #}
-                {% set predicate = dsl_alias ~ '.' ~ dsl_col ~ ' = ' ~ onyx_alias ~ '.address_id' %}
+                {# Address-based join #}
+                {% set predicate = bian_alias ~ '.' ~ bian_col ~ ' = ' ~ crm_alias ~ '.address_id' %}
                 {% do join_predicates.append(predicate) %}
 
             {% elif key_type == 'did' %}
-                {# DID-based join: onyx.did = dsl.<dsl_col> #}
-                {% set predicate = dsl_alias ~ '.' ~ dsl_col ~ ' = ' ~ onyx_alias ~ '.did' %}
+                {# DID-based join #}
+                {% set predicate = bian_alias ~ '.' ~ bian_col ~ ' = ' ~ crm_alias ~ '.did' %}
                 {% do join_predicates.append(predicate) %}
 
             {% else %}
                 {# Generic key: direct mapped attribute join #}
-                {% set predicate = dsl_alias ~ '.' ~ dsl_col ~ ' = ' ~ onyx_alias ~ '.' ~ onyx_col %}
+                {% set predicate = bian_alias ~ '.' ~ bian_col ~ ' = ' ~ crm_alias ~ '.' ~ crm_col %}
                 {% do join_predicates.append(predicate) %}
 
             {% endif %}
         {% endif %}
     {% endfor %}
 
-    {# Fallback: if no key predicates, raise a compiler error #}
+    {# Fallback: if no key predicates, raise error #}
     {% if join_predicates | length == 0 %}
         {% do exceptions.raise_compiler_error(
-            'build_join_conditions: no key predicates found for mapping_rows; check is_key and metadata.'
+            'build_join_conditions: no key predicates found; check is_key in metadata'
         ) %}
     {% endif %}
 
-    {# Join all predicates with AND to form the ON clause #}
+    {# Join all predicates with AND #}
     {{ join_predicates | join(' AND ') }}
 {% endmacro %}
+```
 
-
-And here’s a typical way you’d call it inside dynamic_reconciliation():
-
-{% macro dynamic_reconciliation(domain, entity, source_system, target_system) %}
-    {% set mappings = (
-        ref('bian_mappings')
-        | where("domain", "=", domain)
-        | where("entity", "=", entity)
-    ) %}
-
-    {% set on_clause = build_join_conditions(mappings, dsl_alias='dsl', onyx_alias='onyx') %}
-
-    select
-        -- metadata-only select here
-    from {{ ref('staging_' ~ source_system ~ '_' ~ domain ~ '_' ~ entity) }} as dsl
-    join {{ ref('staging_' ~ target_system ~ '_' ~ domain ~ '_' ~ entity) }} as onyx
-        on {{ on_clause }}
-{% endmacro %}
-
-
-If metadata encodes owner_id and owner_type_id as separate rows,  extend this to group by onyx_key_type and build composite predicates—happy to tighten that next if you want composite owner logic fully explicit.
-
-
-• the mismatch detection logic
-
-This is the piece that sits inside macros/reconciliation/build_match_status.sql and build_mismatch_array.sql.
-It plugs directly into your dynamic reconciliation macro.
-
-I’ll give you:
-
-1. mismatch array builder
-2. mismatch count builder
-3. match status builder
-4. A usage example inside a SELECT
-
-
-Everything is metadata‑driven and safe for reporting.
+**Usage example:**
+```jinja
+{% set on_clause = build_join_conditions(mappings, bian_alias='bian', crm_alias='crm') %}
+```
 
 ---
 
-MISMATCH ARRAY BUILDER
+## 7. Reconciliation Logic
 
-This macro receives the mapping rows and generates an array of attribute names where DSL and ONYX differ — without exposing values.
+The reconciliation engine is **fully metadata-driven**.  
+No entity-specific SQL is written in the models.
 
-{% macro build_mismatch_array(mapping_rows, dsl_alias='dsl', onyx_alias='onyx') %}
+### 7.1 dynamic_reconciliation() Macro
+
+The `dynamic_reconciliation()` macro performs the following steps:
+
+1. **Load metadata**  
+   Load BIAN mapping metadata for the given domain and entity
+
+2. **Identify key attributes**  
+   Filter attributes where `is_key = 'Y'`
+
+3. **Build join rules dynamically**
+   - BIANSystem key attributes
+   - CRM mapped key attributes
+   - CRM reference logic:
+     - `owner_id + owner_type_id` (composite keys)
+     - `address_id` (direct join)
+     - `did` (direct join)
+
+4. **Load reconciliation type metadata**  
+   Determine comparison rules for each attribute
+
+5. **Build match_status**
+   - `matched`
+   - `mismatch`
+   - `missing_in_source`
+   - `missing_in_target`
+
+6. **Build mismatch_columns array**  
+   Contains attribute names only (no values)
+
+7. **Build mismatch_count**  
+   Count of attributes with mismatches
+
+8. **Return SELECT block**  
+   Contains only metadata fields:
+   - domain
+   - entity
+   - primary keys (BIANSystem + CRM)
+   - match_status
+   - mismatch_columns
+   - mismatch_count
+   - reconciliation_type
+   - run_id
+   - load_timestamp
+
+**No attribute values are included in the output.**
+
+---
+
+## 8. Mismatch Detection Logic
+
+### 8.1 build_mismatch_array() Macro
+
+Generates an array of attribute names where BIANSystem and CRM differ — **without exposing values**.
+
+**File:** `macros/reconciliation/build_mismatch_array.sql`
+
+```jinja
+{% macro build_mismatch_array(mapping_rows, bian_alias='bian', crm_alias='crm') %}
     {# 
       Returns an array of attribute names that differ.
       No values are included.
@@ -616,19 +322,19 @@ This macro receives the mapping rows and generates an array of attribute names w
     {% set mismatches = [] %}
 
     {% for row in mapping_rows %}
-        {% set dsl_col = row.dsl_attribute %}
-        {% set onyx_col = row.onyx_attribute %}
+        {% set bian_col = row.bian_attribute %}
+        {% set crm_col = row.crm_attribute %}
 
         {# Only compare non-key attributes #}
         {% if row.is_key | lower != 'y' %}
             {% set predicate %}
                 case 
-                    when {{ dsl_alias }}.{{ dsl_col }} is null 
-                         and {{ onyx_alias }}.{{ onyx_col }} is null 
+                    when {{ bian_alias }}.{{ bian_col }} is null 
+                         and {{ crm_alias }}.{{ crm_col }} is null 
                         then null
-                    when {{ dsl_alias }}.{{ dsl_col }} = {{ onyx_alias }}.{{ onyx_col }}
+                    when {{ bian_alias }}.{{ bian_col }} = {{ crm_alias }}.{{ crm_col }}
                         then null
-                    else '{{ dsl_col }}'
+                    else '{{ bian_col }}'
                 end
             {% endset %}
 
@@ -638,42 +344,36 @@ This macro receives the mapping rows and generates an array of attribute names w
 
     array_remove(array_construct({{ mismatches | join(', ') }}), null)
 {% endmacro %}
+```
 
-
-This produces an array like:
-
+**Example output:**
+```
 ['email_address', 'status_code']
+```
 
-But never the values.
+### 8.2 build_mismatch_count() Macro
 
----
-
-MISMATCH COUNT BUILDER
-
+```jinja
 {% macro build_mismatch_count(mismatch_array) %}
     array_length({{ mismatch_array }})
 {% endmacro %}
+```
 
-Simple, clean, and warehouse‑agnostic.
+### 8.3 build_match_status() Macro
 
----
+Determines the final match status.
 
-MATCH STATUS BUILDER
+**File:** `macros/reconciliation/build_match_status.sql`
 
-This macro determines the final match status using:
-
-• missing in source
-• missing in target
-• mismatch array length
-
-{% macro build_match_status(dsl_alias='dsl', onyx_alias='onyx', mismatch_array='mismatch_cols') %}
+```jinja
+{% macro build_match_status(bian_alias='bian', crm_alias='crm', mismatch_array='mismatch_cols') %}
     case
-        when {{ dsl_alias }}.primary_key is null 
-             and {{ onyx_alias }}.primary_key is not null
+        when {{ bian_alias }}.primary_key is null 
+             and {{ crm_alias }}.primary_key is not null
             then 'missing_in_source'
 
-        when {{ dsl_alias }}.primary_key is not null 
-             and {{ onyx_alias }}.primary_key is null
+        when {{ bian_alias }}.primary_key is not null 
+             and {{ crm_alias }}.primary_key is null
             then 'missing_in_target'
 
         when array_length({{ mismatch_array }}) > 0
@@ -682,15 +382,17 @@ This macro determines the final match status using:
         else 'matched'
     end
 {% endmacro %}
+```
 
-You can adjust the primary key reference depending on how you expose it (flattened or JSON).
+**Match statuses:**
+- `matched` - All attributes match
+- `mismatch` - One or more attributes differ
+- `missing_in_source` - Record exists in CRM but not BIANSystem
+- `missing_in_target` - Record exists in BIANSystem but not CRM
 
----
+### 8.4 Usage in dynamic_reconciliation()
 
-HOW THESE MACROS ARE USED IN THE RECONCILIATION SELECT
-
-Inside dynamic_reconciliation():
-
+```jinja
 {% set mismatch_array = build_mismatch_array(mappings) %}
 {% set mismatch_count = build_mismatch_count(mismatch_array) %}
 {% set match_status = build_match_status(mismatch_array=mismatch_array) %}
@@ -701,124 +403,477 @@ select
     '{{ source_system }}' as source_system,
     '{{ target_system }}' as target_system,
 
-    dsl.primary_key as dsl_primary_key,
-    onyx.primary_key as onyx_primary_key,
+    bian.primary_key as bian_primary_key,
+    crm.primary_key as crm_primary_key,
 
     {{ match_status }} as match_status,
     {{ mismatch_array }} as mismatch_columns,
     {{ mismatch_count }} as mismatch_count,
 
     recon_type.reconciliation_type,
-    {{ run_started_at() }} as load_timestamp
+    {{ run_started_at }} as load_timestamp
 
 from ...
+```
 
-This produces a metadata‑only reconciliation record:
-
-• No values
-• No sensitive data
-• Only mismatch metadata
-
-
-Exactly what you need for your reporting schema.
+This produces a metadata-only reconciliation record:
+- No values
+- No sensitive data
+- Only mismatch metadata
 
 ---
 
+## 9. Unified Mismatch Table
 
-• the full dynamic_reconciliation macro
-• the summary model
-• the exception model template
+The model `recon_all_mismatches.sql` aggregates all reconciliation results across all domains and entities.
 
-models/reconciliation/<domain>/recon_<domain>_<entity>_exceptions.sql
+**File:** `models/reconciliation_summary/recon_all_mismatches.sql`
 
-EXCEPTION MODEL TEMPLATE (TXT)
+**Schema:**
 
-{{ config( materialized = ‘table’, schema = ‘Reporting’, alias = ‘recon___exceptions’ ) }}
+| Column | Description |
+|--------|-------------|
+| `domain` | BIAN service domain |
+| `entity` | BIAN business object |
+| `source_system` | Always 'biansystem' |
+| `target_system` | Always 'crm' |
+| `bian_primary_key` | Primary key from BIANSystem |
+| `crm_primary_key` | Primary key from CRM |
+| `match_status` | matched, mismatch, missing_in_source, missing_in_target |
+| `mismatch_columns` | Array of attribute names with differences |
+| `mismatch_count` | Count of mismatched attributes |
+| `reconciliation_type` | Type of reconciliation performed |
+| `run_id` | Unique identifier for reconciliation run |
+| `load_timestamp` | Timestamp of reconciliation execution |
 
-– Exception Model for <domain>.<entity> – Purpose: –   Capture business‑approved exceptions where mismatches should be ignored, –   reclassified, or assigned a different match_status.
+**This table is used for:**
+- Reporting dashboards
+- Operational monitoring
+- Audit trails
+- Trend analysis
 
-– Notes: –   1. This model NEVER contains value‑level data. –   2. This model ONLY references the unified mismatch metadata. –   3. All exceptions must be explicit and documented. –   4. The main reconciliation model remains untouched.
+---
 
-with base as ( select * from {{ ref(‘recon__’) }} ),
+## 10. Value Investigation
+
+Value-level investigation is performed **directly against staging models** on the day of analysis.
+
+**No values are stored in reporting schemas.**
+
+### Why This Approach?
+
+- ✅ Staging models already contain clean, typed, transformed data
+- ✅ No duplication of data
+- ✅ No PII leakage into reporting schemas
+- ✅ No need for a forensic schema
+- ✅ No need to maintain extra tables
+
+### How to Investigate Values
+
+When a mismatch is identified:
+
+1. Query the unified mismatch table to identify the record
+2. Query staging models directly:
+   ```sql
+   -- BIANSystem value
+   SELECT * FROM stg_biansystem_prdd_emails WHERE email_id = '12345';
+   
+   -- CRM value
+   SELECT * FROM stg_crm_prdd_emails WHERE email_id = '12345';
+   ```
+
+---
+
+## 11. Project Structure
+
+The dbt project root is located in the **"crmdsl"** folder.
+
+```
+crmdsl/
+├── dbt_project.yml
+├── macros/
+│   └── reconciliation/
+│       ├── dynamic_reconciliation.sql
+│       ├── build_join_conditions.sql
+│       ├── build_match_status.sql
+│       ├── build_mismatch_array.sql
+│       ├── classify_crm_key_type.sql
+│       └── transform_bian_mappings.sql
+├── models/
+│   ├── reconciliation/
+│   │   └── <domain>/
+│   │       ├── recon_<domain>_<entity>.sql
+│   │       └── recon_<domain>_<entity>_exceptions.sql
+│   └── reconciliation_summary/
+│       ├── recon_all_mismatches.sql
+│       └── bian_mappings_normalized.sql
+├── seeds/
+│   ├── bian_mappings.csv
+│   └── bian_reconciliation_types.csv
+└── staging/
+    ├── stg_biansystem_<domain>_<entity>.sql
+    └── stg_crm_<domain>_<entity>.sql
+```
+
+---
+
+## 12. Reconciliation Model Template
+
+Each reconciliation model is a **thin wrapper** that calls the macro.
+
+**File:** `models/reconciliation/<domain>/recon_<domain>_<entity>.sql`
+
+```sql
+{{ config(
+    materialized='table',
+    schema='Reporting',
+    alias='recon_{{ domain }}_{{ entity }}'
+) }}
+
+{{ dynamic_reconciliation(
+    domain='prdd',
+    entity='emails',
+    source_system='biansystem',
+    target_system='crm'
+) }}
+```
+
+**No SQL is written in the model itself.**
+
+---
+
+## 13. Exception Models
+
+Each entity may optionally define an exceptions model to capture:
+- Known mismatches
+- Business-approved overrides
+- Tolerance rules
+
+**File:** `models/reconciliation/<domain>/recon_<domain>_<entity>_exceptions.sql`
+
+```sql
+{{ config(
+    materialized='table',
+    schema='Reporting',
+    alias='recon_{{ domain }}_{{ entity }}_exceptions'
+) }}
+
+-- Exception Model for {{ domain }}.{{ entity }}
+-- Purpose:
+--   Capture business-approved exceptions where mismatches should be ignored,
+--   reclassified, or assigned a different match_status.
+
+with base as (
+    select * from {{ ref('recon_{{ domain }}_{{ entity }}') }}
+),
 
 exceptions as (
+    -- EXAMPLE 1: Ignore mismatches for specific keys
+    /*
+    select
+        domain,
+        entity,
+        source_system,
+        target_system,
+        bian_primary_key,
+        crm_primary_key,
+        'exception_ignored' as match_status,
+        array_construct() as mismatch_columns,
+        0 as mismatch_count,
+        reconciliation_type,
+        run_id,
+        load_timestamp
+    from base
+    where bian_primary_key in ('12345', '67890')
+    */
 
--- EXAMPLE 1: Ignore mismatches for specific keys
--- Uncomment and adjust as needed
-/*
-select
-    domain,
-    entity,
-    source_system,
-    target_system,
-    dsl_primary_key,
-    onyx_primary_key,
-    'exception_ignored' as match_status,
-    array_construct() as mismatch_columns,
-    0 as mismatch_count,
-    reconciliation_type,
-    run_id,
-    load_timestamp
-from base
-where dsl_primary_key in ('12345', '67890')
-*/
+    -- EXAMPLE 2: Reclassify mismatches for tolerance rules
+    /*
+    select
+        domain,
+        entity,
+        source_system,
+        target_system,
+        bian_primary_key,
+        crm_primary_key,
+        'tolerated_difference' as match_status,
+        mismatch_columns,
+        mismatch_count,
+        reconciliation_type,
+        run_id,
+        load_timestamp
+    from base
+    where 'status_code' = any(mismatch_columns)
+    */
 
--- EXAMPLE 2: Reclassify mismatches for known tolerance rules
-/*
-select
-    domain,
-    entity,
-    source_system,
-    target_system,
-    dsl_primary_key,
-    onyx_primary_key,
-    'tolerated_difference' as match_status,
-    mismatch_columns,
-    mismatch_count,
-    reconciliation_type,
-    run_id,
-    load_timestamp
-from base
-where 'status_code' = any(mismatch_columns)
-*/
-
--- Default: no exceptions
-select *
-from base
-
-
+    -- Default: no exceptions
+    select * from base
 )
 
-select * from exceptions;
+select * from exceptions
+```
+
+**These models are stored alongside the reconciliation models.**
 
 ---
 
-HOW THIS TEMPLATE WORKS
+## 14. Running the Project
 
-1. It starts by selecting from the main reconciliation model: recon__
-2. It allows you to:• ignore mismatches
+From the project root (`crmdsl` folder):
 
-• reclassify mismatches
-• apply tolerance rules
-• override match_status
+```bash
+# Clean and refresh
+dbt clean
 
-3. It never exposes values — only metadata.
-4. It returns the same schema as the main reconciliation model, so the summary model can UNION ALL safely.
+# Load seed data
+dbt seed
 
+# Run all models
+dbt run
+
+# Run tests
+dbt test
+```
+
+### Compile Only
+
+```bash
+dbt compile
+```
+
+### Run Specific Domain
+
+```bash
+dbt run --select recon_prdd_*
+```
+
+### Run Summary Model
+
+```bash
+dbt run --select recon_all_mismatches
+```
 
 ---
 
-• the BIAN mapping validator
-• the ONYX reference join logic (owner/address/did composite handling)
+## 15. Summary
 
+This reconciliation framework is:
 
-Just tell me which piece you want next.
+- ✅ **Metadata-driven** - All logic generated from seeds
+- ✅ **Scalable** - Works across all BIAN domains
+- ✅ **Consistent** - Same pattern for every entity
+- ✅ **Auditable** - Complete lineage and documentation
+- ✅ **Safe** - No values in reporting tables (metadata only)
+- ✅ **Extensible** - Easy to add new domains/entities
+- ✅ **Aligned with dbt best practices** - Modular macros, ref() usage, documented
 
-• the summary model
+### Key Principles
 
-• the seed schema
+1. **No entity-specific SQL** - Everything is metadata-driven
+2. **Metadata-only output** - Values investigated via staging models
+3. **Dynamic join logic** - Handles complex CRM key types
+4. **Unified mismatch table** - Single source of truth for reconciliation status
+5. **Exception handling** - Business rules applied via exception models
 
-• the folder structure scaffolding
+The unified mismatch table provides a single source of truth for reconciliation status, while value investigation is performed directly against staging models.
 
+---
 
-Just tell me what you want next.
+## 16. Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Metadata Seeds                           │
+│  ┌─────────────────────┐  ┌──────────────────────────────┐ │
+│  │ bian_mappings.csv   │  │ bian_reconciliation_types   │ │
+│  └─────────────────────┘  └──────────────────────────────┘ │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+          ┌──────────────────────┐
+          │ Transformation Macro │
+          │  transform_bian_     │
+          │    _mappings()       │
+          └──────────┬───────────┘
+                     │
+                     ▼
+          ┌──────────────────────┐
+          │ Normalized Metadata  │
+          │ bian_mappings_       │
+          │   normalized         │
+          └──────────┬───────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+        ▼                         ▼
+┌───────────────────┐    ┌───────────────────┐
+│  BIANSystem       │    │  CRM              │
+│  Staging Models   │    │  Staging Models   │
+│  stg_biansystem_* │    │  stg_crm_*        │
+└────────┬──────────┘    └────────┬──────────┘
+         │                        │
+         └────────┬───────────────┘
+                  │
+                  ▼
+      ┌───────────────────────────┐
+      │  dynamic_reconciliation() │
+      │  ┌─────────────────────┐  │
+      │  │ build_join_         │  │
+      │  │   conditions()      │  │
+      │  ├─────────────────────┤  │
+      │  │ build_mismatch_     │  │
+      │  │   array()           │  │
+      │  ├─────────────────────┤  │
+      │  │ build_match_        │  │
+      │  │   status()          │  │
+      │  └─────────────────────┘  │
+      └────────────┬──────────────┘
+                   │
+                   ▼
+        ┌──────────────────────────┐
+        │ Reconciliation Models    │
+        │ recon_<domain>_<entity>  │
+        └────────────┬─────────────┘
+                     │
+                     ▼
+        ┌──────────────────────────┐
+        │ Unified Mismatch Table   │
+        │ recon_all_mismatches     │
+        └──────────────────────────┘
+```
+
+---
+
+## 17. Next Steps
+
+To implement this framework for a new domain/entity:
+
+1. **Add metadata** to `bian_mappings.csv`
+2. **Create staging models** for BIANSystem and CRM
+3. **Create reconciliation model** using the template
+4. **Run** `dbt seed && dbt run`
+5. **Optional:** Create exception model if needed
+
+No additional macro development required!
+
+---
+
+## 18. GitHub Copilot Implementation Prompt
+
+You are assisting with implementing a metadata-driven reconciliation framework in dbt.
+The goal is to generate a set of macros and model templates that reconcile BIANSystem staging entities against CRM staging entities using metadata from BIAN mapping seeds and BIAN reconciliation type seeds.
+
+### IMPORTANT CONSTRAINTS
+
+- The unified reconciliation output must NOT contain attribute values
+- Only metadata should be produced: keys, mismatch columns, mismatch count, match status, reconciliation type, run_id, timestamps
+- Value investigation will be performed directly against staging models, not stored in reporting schemas
+
+### ARCHITECTURE TO IMPLEMENT
+
+1. One reconciliation model per BIAN domain and entity
+2. One unified mismatch table for all domains/entities
+3. All join rules and comparison logic must be metadata-driven
+4. No entity-specific SQL in models; everything must be generated by macros
+5. No value-level columns in the reconciliation output
+
+### SEED TABLES TO USE
+
+**1. ref('bian_mappings')**
+
+Columns include:
+- domain
+- entity
+- bian_attribute
+- crm_attribute
+- is_key (Y/N)
+- crm_key_type (owner, address, did, generic)
+
+**2. ref('bian_reconciliation_types')**
+
+Columns include:
+- reconciliation_type
+- join_type (left, full_outer)
+- direction (one_way_left, both_ways)
+- include_missing_source
+- include_missing_target
+- match_priority
+
+### MACROS TO IMPLEMENT
+
+**A. dynamic_reconciliation(domain, entity, source_system, target_system)**
+
+Responsibilities:
+- Load BIAN mappings for the domain/entity
+- Identify key attributes (is_key = 'Y')
+- Build dynamic join rules:
+  - BIANSystem key attributes
+  - CRM mapped key attributes
+  - CRM reference logic:
+    - owner_id + owner_type_id composite keys
+    - address_id joins
+    - did joins
+- Load reconciliation type metadata
+- Build match_status:
+  - matched
+  - mismatch
+  - missing_in_source
+  - missing_in_target
+- Build mismatch_columns array (attribute names only)
+- Build mismatch_count
+- Return a SELECT block containing ONLY:
+  - domain
+  - entity
+  - source_system
+  - target_system
+  - primary keys (BIANSystem + CRM)
+  - match_status
+  - mismatch_columns
+  - mismatch_count
+  - reconciliation_type
+  - run_id
+  - load_timestamp
+
+**B. build_join_conditions(mapping_rows)**
+- Accepts filtered BIAN mapping rows
+- Generates the CRM join logic based on crm_key_type
+- Must support composite keys and reference logic
+
+**C. build_match_status()**
+- Generates match_status using metadata and null checks
+
+**D. build_mismatch_array()**
+- Produces an array of attribute names that differ
+- No values included
+
+**E. build_mismatch_count()**
+- Count of mismatched attributes
+
+### MODEL TEMPLATES TO GENERATE
+
+1. `models/reconciliation/<domain>/recon_<domain>_<entity>.sql`
+   - Thin wrapper calling dynamic_reconciliation()
+
+2. `models/reconciliation/<domain>/recon_<domain>_<entity>_exceptions.sql`
+   - Optional override model for business exceptions
+
+3. `models/reconciliation_summary/recon_all_mismatches.sql`
+   - UNION ALL of all reconciliation models
+   - Produces the unified mismatch table
+
+### REQUIREMENTS
+
+- Use ref() for staging models
+- Use adapter.dispatch() for macro extensibility
+- No hard-coded SQL for any entity
+- No value-level columns in any reconciliation output
+- Code must be clean, modular, and sponsor-grade
+
+### DELIVERABLES
+
+- All macros listed above
+- All model templates
+- Documentation blocks for each macro
+- A working, metadata-driven reconciliation framework
+
+Proceed to generate the full implementation.

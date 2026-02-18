@@ -41,7 +41,7 @@ jobs:
           echo "      port: 1433" >> %USERPROFILE%\.dbt\profiles.yml
           echo "      user: ${{ secrets.SQLSERVER_USER }}" >> %USERPROFILE%\.dbt\profiles.yml
           echo "      password: ${{ secrets.SQLSERVER_PASSWORD }}" >> %USERPROFILE%\.dbt\profiles.yml
-          echo "      database: crmdsl" >> %USERPROFILE%\.dbt\profiles.yml
+          echo "      database: crmbiansys" >> %USERPROFILE%\.dbt\profiles.yml
           echo "      schema: dbtcore" >> %USERPROFILE%\.dbt\profiles.yml
 
       # Run dbt commands

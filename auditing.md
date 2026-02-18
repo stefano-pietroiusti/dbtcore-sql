@@ -119,10 +119,10 @@ This provides visibility into dbt execution at the orchestration level.
 
 Logging From SQL Stored Procedures
 ----------------------------------
-SQL sprocs (e.g., monitoring.Check_OnyxRecon_Health) log their own events:
+SQL sprocs (e.g., monitoring.Check_CRMRecon_Health) log their own events:
 
     EXEC monitoring.LogEvent
-        @ComponentName = 'sql.Check_OnyxRecon_Health',
+        @ComponentName = 'sql.Check_CRMRecon_Health',
         @RunId = @RunId,
         @Level = 'INFO',
         @Message = 'Starting health checks';

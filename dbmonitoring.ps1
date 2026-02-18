@@ -11,7 +11,7 @@ $Sproc       = "monitoring.sproc"
 $NowLocal = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 $NowUtc   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")
 
-Write-Host "[Check_OnyxRecon_Health] Starting at $NowLocal (Local), $NowUtc (UTC)"
+Write-Host "[Check_CRMRecon_Health] Starting at $NowLocal (Local), $NowUtc (UTC)"
 
 # Build SQL command
 $SqlCmd = @"
@@ -26,9 +26,9 @@ $exitCode  = $LASTEXITCODE
 Write-Host $sqlResult
 
 if ($exitCode -ne 0) {
-    Write-Host "[Check_OnyxRecon_Health] FAILED with exit code $exitCode"
+    Write-Host "[Check_CRMRecon_Health] FAILED with exit code $exitCode"
     exit 1
 }
 
-Write-Host "[Check_OnyxRecon_Health] PASSED successfully"
+Write-Host "[Check_CRMRecon_Health] PASSED successfully"
 exit 0

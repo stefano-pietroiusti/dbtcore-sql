@@ -203,7 +203,7 @@ Generate reconciliation models that dynamically compare source and target system
 - `reconciliation_summary()`
 
 **Staging models follow:**
-- `stg_<system>_<domain>_<entity>` (domain required only for DSL)
+- `stg_<system>_<domain>_<entity>` (domain required only for BIANSYS)
 
 ---
 
@@ -267,7 +267,7 @@ Generate reconciliation models that dynamically compare source and target system
 - ❌ No warehouse-specific SQL
 - ✅ Always reference seeds using `ref()`
 - ✅ Always reference staging models using `ref(staging_name(...))`
-- ✅ Domain is required only for DSL; other systems ignore domain in staging names
+- ✅ Domain is required only for BIANSYS; other systems ignore domain in staging names
 - ✅ All reconciliation SQL must be generated through macros
 
 #### Deliverables for Goal 1
